@@ -1,0 +1,62 @@
+variables:
+  DOCKER_IMAGE: $CI_REGISTRY_IMAGE/test
+  ARGOCD_VERSION: v2.8.4
+  KUBECTL_VERSION: v1.28.0
+  KUSTOMIZE_VERSION: v5.2.1
+  GITLAB_DOMAIN: gitlab.com
+  
+stages:
+  - build
+  - deploy
+
+
+before_script:
+  - apt-get update && apt-get install -y wget git curl
+  - wget -O go.tar.gz https://golang.org/dl/go${GOLANG_VERSION}.linux-amd64.tar.gz
+  - tar -C /usr/local -xzf go.tar.gz
+  - export PATH=$PATH:/usr/local/go/bin
+  - go version
+  - go env -w GOCACHE=/builds/cache/go-build
+
+
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker build -t $DOCKER_IMAGE:$CI_COMMIT_SHORT_SHA .
+    - docker push $DOCKER_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker tag $DOCKER_IMAGE:$CI_COMMIT_SHORT_SHA $DOCKER_IMAGE:latest
+    - docker push $DOCKER_IMAGE:latest
+  only:
+    - main
+
+deploy:
+  stage: deploy
+  image: google/cloud-sdk:latest
+  script:
+    # Install kubectl
+    - curl -LO https://storage.googleapis.com/kubernetes-release/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl
+    - chmod +x ./kubectl
+    - mv ./kubectl /usr/local/bin/kubectl
+
+    # Install Kustomize
+    - curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz | tar xz
+    - chmod +x kustomize
+    - mv kustomize /usr/local/bin/
+
+    # Authenticate with GKE
+    - echo "$GCP_SERVICE_ACCOUNT" > /tmp/gcp-service-account.json
+    - gcloud auth activate-service-account --key-file=/tmp/gcp-service-account.json
+    - gcloud config set project $GCP_PROJECT_ID
+    - gcloud container clusters get-credentials $GKE_CLUSTER_NAME --zone $GCP_ZONE
+
+    - kubectl apply -k .
+
+  only:
+    - main
